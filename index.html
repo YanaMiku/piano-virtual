@@ -83,10 +83,9 @@
             position: absolute;
             z-index: 2;
             top: 0;
-            margin-left: calc(var(--zoom-level) * -0.325); 
             box-shadow: 2px 4px 6px rgba(0,0,0,0.5);
             cursor: pointer;
-            transition: width 0.1s ease, margin-left 0.1s ease;
+            transition: width 0.1s ease, left 0.1s ease;
         }
 
         .key.black.active {
@@ -209,10 +208,22 @@
     ];
 
     let audioCtx;
+    let compressor;
+    const activeVoices = {};
 
     function initAudio() {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === 'suspended') audioCtx.resume();
+
+        if (!compressor) {
+            compressor = audioCtx.createDynamicsCompressor();
+            compressor.threshold.setValueAtTime(-30, audioCtx.currentTime);
+            compressor.knee.setValueAtTime(30, audioCtx.currentTime);
+            compressor.ratio.setValueAtTime(20, audioCtx.currentTime);
+            compressor.attack.setValueAtTime(0.003, audioCtx.currentTime);
+            compressor.release.setValueAtTime(0.25, audioCtx.currentTime);
+            compressor.connect(audioCtx.destination);
+        }
     }
 
     function playGrandPiano(note) {
@@ -221,38 +232,59 @@
         if (!freq) return;
 
         const now = audioCtx.currentTime;
+
+        // Stop voice sebelumnya untuk nada yang sama
+        if (activeVoices[note]) {
+            const old = activeVoices[note];
+            old.mainGain.gain.cancelScheduledValues(now);
+            old.mainGain.gain.setValueAtTime(old.mainGain.gain.value || 0, now);
+            old.mainGain.gain.linearRampToValueAtTime(0.001, now + 0.1);
+            old.oscillators.forEach(osc => {
+                try { osc.stop(now + 0.11); } catch (e) {}
+            });
+        }
+
         const mainGain = audioCtx.createGain();
-        mainGain.connect(audioCtx.destination);
+        mainGain.connect(compressor || audioCtx.destination);
         const duration = 3.5;
 
-        // Normalisasi volume: Frekuensi rendah (C3) ditingkatkan amplitudonya 
-        // agar seimbang dengan frekuensi tinggi di telinga manusia.
-        const baseVolume = 0.8; 
-        const freqCompensation = Math.max(1, 400 / freq); 
+        const baseVolume = 0.5;
+        const freqCompensation = Math.min(3, Math.max(1, 400 / freq));
         const targetGain = baseVolume * freqCompensation;
 
         mainGain.gain.setValueAtTime(0, now);
-        mainGain.gain.linearRampToValueAtTime(targetGain, now + 0.005);
-        mainGain.gain.exponentialRampToValueAtTime(0.001, now + duration); 
-        
-        // Komposisi harmoni yang lebih kuat
+        mainGain.gain.linearRampToValueAtTime(targetGain, now + 0.01);
+        mainGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
         const partials = [
-            { f: 1, g: 0.6, t: 'sine' },     // Fundamental lebih keras
-            { f: 2, g: 0.3, t: 'sine' },     // Harmoni ke-2
-            { f: 3, g: 0.15, t: 'triangle' } // Karakteristik kayu
+            { f: 1, g: 0.35, t: 'sine', detune: -10 },
+            { f: 1, g: 0.35, t: 'sine', detune: 10 },
+            { f: 2, g: 0.20, t: 'sine' },
+            { f: 3, g: 0.15, t: 'triangle' },
+            { f: 4, g: 0.10, t: 'sine' },
+            { f: 5, g: 0.05, t: 'triangle' }
         ];
+
+        const oscillators = [];
 
         partials.forEach(p => {
             const osc = audioCtx.createOscillator();
-            const g = audioCtx.createGain();
             osc.type = p.t;
             osc.frequency.setValueAtTime(freq * p.f, now);
+            if (p.detune !== undefined) osc.detune.setValueAtTime(p.detune, now);
+
+            const g = audioCtx.createGain();
             g.gain.setValueAtTime(p.g, now);
+
             osc.connect(g);
             g.connect(mainGain);
             osc.start(now);
-            osc.stop(now + duration + 0.1);
+            osc.stop(now + duration + 0.2);
+
+            oscillators.push(osc);
         });
+
+        activeVoices[note] = { mainGain, oscillators };
     }
 
     const board = document.getElementById('board');
@@ -273,17 +305,24 @@
         Array.from(board.children).forEach(key => {
             if (key.classList.contains('black')) {
                 const prevWhite = key.previousElementSibling;
-                if (prevWhite) {
+                if (prevWhite && prevWhite.classList.contains('white')) {
                     const whiteWidth = prevWhite.offsetWidth;
-                    key.style.left = (prevWhite.offsetLeft + whiteWidth - (key.offsetWidth / 2)) + 'px';
+                    const whiteLeft = prevWhite.offsetLeft;
+                    key.style.left = `${whiteLeft + whiteWidth - key.offsetWidth / 2}px`;
                 }
             }
         });
     }
 
+    // ResizeObserver untuk mendeteksi setiap perubahan ukuran (termasuk saat zoom)
+    if ('ResizeObserver' in window) {
+        new ResizeObserver(positionBlackKeys).observe(board);
+    }
+
     zoomSlider.addEventListener('input', (e) => {
         document.documentElement.style.setProperty('--zoom-level', e.target.value + 'px');
         positionBlackKeys();
+        requestAnimationFrame(positionBlackKeys);
     });
 
     window.addEventListener('load', positionBlackKeys);
