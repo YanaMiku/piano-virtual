@@ -9,7 +9,8 @@
             --bg-color: #0f0f0f;
             --piano-bg: #000000;
             --accent: #d4af37;
-            --zoom-level: 55px; /* Lebar default tuts putih */
+            --base-width: 55px; /* Lebar base tuts putih */
+            --scale: 1; /* Skala zoom */
         }
 
         * {
@@ -35,47 +36,51 @@
         /* Container utama piano */
         .piano-wrapper {
             width: 100%;
-            height: 70vh;
+            height: auto;
+            min-height: 60vh;
             background: var(--piano-bg);
-            padding: 20px 0;
+            padding: 40px 0;
             display: flex;
             justify-content: center;
+            align-items: flex-start;
             overflow-x: auto;
-            overflow-y: hidden;
+            overflow-y: visible;
             border-bottom: 5px solid #1a1a1a;
         }
 
         .piano-keys {
             position: relative;
             display: flex;
-            height: 100%;
+            height: calc(var(--base-width) * 10);
             padding: 0 20px;
-            min-width: max-content; 
+            width: fit-content;
+            margin: 0 auto;
+            transform-origin: top center;
+            transform: scale(var(--scale));
         }
 
         /* Tuts Putih */
         .key.white {
-            width: var(--zoom-level);
+            width: var(--base-width);
             height: 100%;
             background: linear-gradient(to bottom, #fff 0%, #eee 90%, #ccc 100%);
             border: 1px solid #bbb;
             border-radius: 0 0 4px 4px;
-            margin: 0 1px;
+            margin: 0;
             position: relative;
             z-index: 1;
             cursor: pointer;
             box-shadow: inset 0 2px 0 #fff;
-            transition: width 0.1s ease;
         }
 
         .key.white.active {
             background: linear-gradient(to bottom, #ddd 0%, #bbb 100%);
-            transform: translateY(2px);
+            transform: translateY(calc(var(--base-width) * 0.036));
         }
 
         /* Tuts Hitam */
         .key.black {
-            width: calc(var(--zoom-level) * 0.65);
+            width: calc(var(--base-width) * 0.65);
             height: 60%;
             background: linear-gradient(to bottom, #444 0%, #000 100%);
             border: 1px solid #000;
@@ -83,35 +88,37 @@
             position: absolute;
             z-index: 2;
             top: 0;
-            box-shadow: 2px 4px 6px rgba(0,0,0,0.5);
+            box-shadow: calc(var(--base-width) * 0.036) calc(var(--base-width) * 0.072) calc(var(--base-width) * 0.109) rgba(0,0,0,0.5);
             cursor: pointer;
-            transition: width 0.1s ease, left 0.1s ease;
         }
 
         .key.black.active {
             background: linear-gradient(to bottom, #222 0%, #111 100%);
-            height: 59%;
+            height: calc(60% - calc(var(--base-width) * 0.036));
         }
 
-        /* Label tuts (sangat transparan) */
+        /* Label tuts (proporsional) */
         .key-label {
             position: absolute;
-            bottom: 10px;
+            bottom: calc(var(--base-width) * 0.18);
             left: 50%;
             transform: translateX(-50%);
-            font-size: 10px;
+            font-size: calc(var(--base-width) * 0.18);
             color: rgba(0,0,0,0.2);
             font-weight: bold;
             pointer-events: none;
         }
 
-        /* Panel Kontrol Zoom */
+        /* Panel Kontrol Zoom & Volume */
         .controls {
             padding: 20px;
             display: flex;
             align-items: center;
-            gap: 15px;
-            color: #555;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 30px;
+            color: #aaa;
+            font-size: 0.9rem;
         }
 
         input[type=range] {
@@ -176,6 +183,10 @@
         <span>-</span>
         <input type="range" id="zoomSlider" min="20" max="100" value="55">
         <span>+</span>
+
+        <span>Vol</span>
+        <input type="range" id="volumeSlider" min="0" max="200" value="100">
+        <span id="volumeValue">100%</span>
     </div>
 
 <script>
@@ -209,6 +220,7 @@
 
     let audioCtx;
     let compressor;
+    let masterGain;
     const activeVoices = {};
 
     function initAudio() {
@@ -224,6 +236,16 @@
             compressor.release.setValueAtTime(0.25, audioCtx.currentTime);
             compressor.connect(audioCtx.destination);
         }
+
+        if (!masterGain) {
+            masterGain = audioCtx.createGain();
+            masterGain.gain.value = 1.0;
+            if (compressor) {
+                compressor.disconnect();
+                compressor.connect(masterGain);
+            }
+            masterGain.connect(audioCtx.destination);
+        }
     }
 
     function playGrandPiano(note) {
@@ -233,7 +255,6 @@
 
         const now = audioCtx.currentTime;
 
-        // Stop voice sebelumnya untuk nada yang sama
         if (activeVoices[note]) {
             const old = activeVoices[note];
             old.mainGain.gain.cancelScheduledValues(now);
@@ -289,6 +310,8 @@
 
     const board = document.getElementById('board');
     const zoomSlider = document.getElementById('zoomSlider');
+    const volumeSlider = document.getElementById('volumeSlider');
+    const volumeValue = document.getElementById('volumeValue');
     const keyElements = {};
 
     keyMap.forEach((item) => {
@@ -314,19 +337,22 @@
         });
     }
 
-    // ResizeObserver untuk mendeteksi setiap perubahan ukuran (termasuk saat zoom)
-    if ('ResizeObserver' in window) {
-        new ResizeObserver(positionBlackKeys).observe(board);
-    }
-
-    zoomSlider.addEventListener('input', (e) => {
-        document.documentElement.style.setProperty('--zoom-level', e.target.value + 'px');
-        positionBlackKeys();
-        requestAnimationFrame(positionBlackKeys);
-    });
-
+    // Posisi black keys hanya sekali (base layout), scaling akan handle proporsi secara sempurna
+    positionBlackKeys();
     window.addEventListener('load', positionBlackKeys);
     window.addEventListener('resize', positionBlackKeys);
+
+    // Zoom dengan transform scale (tidak perlu update posisi black keys lagi)
+    zoomSlider.addEventListener('input', (e) => {
+        const scale = e.target.value / 55;
+        document.documentElement.style.setProperty('--scale', scale);
+    });
+
+    volumeSlider.addEventListener('input', (e) => {
+        const vol = e.target.value / 100;
+        if (masterGain) masterGain.gain.value = vol;
+        volumeValue.textContent = Math.round(vol * 100) + '%';
+    });
 
     function triggerStart(keyChar) {
         const el = keyElements[keyChar];
@@ -379,8 +405,64 @@
         });
     });
 
+    let mouseDown = false;
+    let currentMouseKey = null;
+
+    board.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        initAudio();
+        mouseDown = true;
+        const el = e.target.closest('.key');
+        if (el) {
+            const k = el.dataset.key;
+            currentMouseKey = k;
+            triggerStart(k);
+        }
+    });
+
+    board.addEventListener('mousemove', (e) => {
+        if (!mouseDown) return;
+        const el = document.elementFromPoint(e.clientX, e.clientY)?.closest('.key');
+        if (el) {
+            const newK = el.dataset.key;
+            if (newK !== currentMouseKey) {
+                if (currentMouseKey) triggerEnd(currentMouseKey);
+                triggerStart(newK);
+                currentMouseKey = newK;
+            }
+        } else {
+            if (currentMouseKey) {
+                triggerEnd(currentMouseKey);
+                currentMouseKey = null;
+            }
+        }
+    });
+
+    board.addEventListener('mouseup', (e) => {
+        if (e.button !== 0) return;
+        mouseDown = false;
+        if (currentMouseKey) {
+            triggerEnd(currentMouseKey);
+            currentMouseKey = null;
+        }
+    });
+
+    board.addEventListener('mouseleave', () => {
+        if (mouseDown) {
+            mouseDown = false;
+            if (currentMouseKey) {
+                triggerEnd(currentMouseKey);
+                currentMouseKey = null;
+            }
+        }
+    });
+
     document.getElementById('start-btn').addEventListener('click', () => {
         initAudio();
+        const initialVol = volumeSlider.value / 100;
+        if (masterGain) masterGain.gain.value = initialVol;
+        volumeValue.textContent = Math.round(initialVol * 100) + '%';
+
         document.getElementById('overlay').style.opacity = '0';
         setTimeout(() => {
             document.getElementById('overlay').style.display = 'none';
